@@ -63,7 +63,7 @@ static const char TAG[] = "FW_SPI";
 
 	#define DMA_CHAN			ESP_SPI_CONTROLLER
 
-	#define SPI_CLK_MHZ			10
+	#define SPI_CLK_MHZ			5
 
 #elif defined CONFIG_IDF_TARGET_ESP32S2
 
@@ -85,7 +85,7 @@ static const char TAG[] = "FW_SPI";
 	#define GPIO_CS 			10
 	#define DMA_CHAN			SPI_DMA_CH_AUTO
 
-	#define SPI_CLK_MHZ			30
+	#define SPI_CLK_MHZ			5
 
 #elif defined CONFIG_IDF_TARGET_ESP32S3
 
@@ -487,6 +487,38 @@ static void spi_transaction_post_process_task(void* pvParameters)
 	}
 }
 
+// Patch for F1C200S
+#define GPIO_MASK_HANDSHAKE (1 << CONFIG_ESP_SPI_GPIO_HANDSHAKE)
+
+static inline void reset_handshake_gpio(void)
+{
+	WRITE_PERI_REG(GPIO_OUT_W1TC_REG, GPIO_MASK_HANDSHAKE);
+}
+
+static void IRAM_ATTR gpio_disable_hs_isr_handler(void* arg)
+{
+	reset_handshake_gpio();
+}
+
+static void register_hs_disable_pin(uint32_t gpio_num)
+{
+    if (gpio_num != -1) {
+    gpio_reset_pin(gpio_num);
+
+    gpio_config_t slave_disable_hs_pin_conf={
+        .intr_type=GPIO_INTR_DISABLE,
+        .mode=GPIO_MODE_INPUT,
+        .pull_up_en=1,
+        .pin_bit_mask=(1<<gpio_num)
+    };
+
+    gpio_config(&slave_disable_hs_pin_conf);
+    gpio_set_intr_type(gpio_num, GPIO_INTR_NEGEDGE);
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(gpio_num, gpio_disable_hs_isr_handler, NULL);
+    }
+}
+
 static interface_handle_t * esp_spi_init(void)
 {
 	esp_err_t ret = ESP_OK;
@@ -545,6 +577,9 @@ static interface_handle_t * esp_spi_init(void)
 	gpio_set_pull_mode(GPIO_MOSI, GPIO_PULLUP_ONLY);
 	gpio_set_pull_mode(GPIO_SCLK, GPIO_PULLUP_ONLY);
 	gpio_set_pull_mode(GPIO_CS, GPIO_PULLUP_ONLY);
+
+	// Patch for F1C200S based off of https://github.com/espressif/esp-hosted/issues/411#issuecomment-2198265906
+	register_hs_disable_pin(GPIO_CS); 
 
 	/* Initialize SPI slave interface */
 	ret=spi_slave_initialize(ESP_SPI_CONTROLLER, &buscfg, &slvcfg, DMA_CHAN);
